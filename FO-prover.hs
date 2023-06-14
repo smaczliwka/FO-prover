@@ -1,8 +1,10 @@
-{-# LANGUAGE UnicodeSyntax, TypeSynonymInstances, FlexibleInstances, LambdaCase #-}
+{-# LANGUAGE UnicodeSyntax, FlexibleInstances #-}
 
 module Main where
 
-import Data.List
+import Data.List ( map, (\\), intersect, partition, nub)
+import Data.Map(Map, member, insert, size, empty, (!))
+-- import Data.Set(toList, fromList)
 
 import System.IO
 import System.Random
@@ -45,26 +47,12 @@ vars (Forall x phi) = nub $ x : vars phi
 -----------------------------------------------------------
 
 freshIn :: VarName -> Formula -> Bool
-x `freshIn` phi = not $ x `elem` vars phi
+x `freshIn` phi = notElem x (vars phi)
 
 -----------------------------------------------------------
 
 freshVariant :: VarName -> Formula -> VarName
 freshVariant x phi = head [ y | y <- variants x, y `freshIn` phi ]
-
------------------------------------------------------------
-
--- fv :: Formula -> [VarName]
--- fv T = []
--- fv F = []
--- fv (Rel _ ts) = varsT (Fun "dummy" ts)
--- fv (Not phi) = fv phi
--- fv (And phi psi) = nub $ fv phi ++ fv psi
--- fv (Or phi psi) = nub $ fv phi ++ fv psi
--- fv (Implies phi psi) = nub $ fv phi ++ fv psi
--- fv (Iff phi psi) = nub $ fv phi ++ fv psi
--- fv (Exists x phi) = delete x $ fv phi
--- fv (Forall x phi) = delete x $ fv phi
 
 -----------------------------------------------------------
 
@@ -125,7 +113,7 @@ fresh phi = evalState (go phi) []
         go T = return T
         go F = return F
         go phi@(Rel _ _) = return phi
-        go (Not phi) = liftM Not (go phi)
+        go (Not phi) = fmap Not (go phi)
         go (And phi psi) = liftM2 And (go phi) (go psi)
         go (Or phi psi) = liftM2 Or (go phi) (go psi)
         go (Implies phi psi) = liftM2 Implies (go phi) (go psi)
@@ -135,10 +123,10 @@ fresh phi = evalState (go phi) []
 
         go2 quantifier x phi =
           do xs <- get
-             let y = head [y | y <- variants x, not $ y `elem` xs]
+             let y = head [y | y <- variants x, notElem y xs]
              let psi = rename x y phi
              put $ y : xs
-             liftM (quantifier y) $ go psi
+             fmap (quantifier y) $ go psi
 
 -------------------------------------------------------------
 
@@ -227,7 +215,7 @@ reduce (Or phi psi) = Or phi psi
 
 skolemise :: Formula -> Formula
 skolemise phi = pnf (skolemFunction [] f (fresh (nnf (close phi)))) where
-  f x = Var x
+  f = Var
 
 close :: Formula -> Formula
 close phi = go $ fv phi
@@ -249,7 +237,7 @@ skolemFunction univar repl (Iff phi psi) =
   Iff (skolemFunction univar repl phi) (skolemFunction univar repl psi)
 skolemFunction univar repl (Exists y phi) = let repl' = update repl y (Fun y univar) in
   skolemFunction univar repl' phi
-skolemFunction univar repl (Forall x phi) = let univar' = ((Var x) : univar) in
+skolemFunction univar repl (Forall x phi) = let univar' = (Var x : univar) in
   Forall x (skolemFunction univar' repl phi)
 
 ---------------------------------------------------------------
@@ -297,8 +285,7 @@ merge (a : as) bs = a : merge bs as
 
 -- alternating merge of a (potentially infinite) list of (potentially infinite) lists
 merges :: [[a]] -> [a]
-merges [] = []
-merges (as:ass) = merge as (merges ass)
+merges ass = foldr merge [] ass
 
 -- collect all functions from a finite list to a (potentially infinite) list
 functions :: Eq a => [a] -> [b] -> [a -> b]
@@ -331,29 +318,177 @@ groundInstances phi ts =
         f repl = subst repl phi
 
 -- TODO: use Davis-Putnam
-atomicFormulas :: Formula -> [Formula]
-atomicFormulas T = []
-atomicFormulas F = []
-atomicFormulas phi@(Rel _ ts) = [phi]
-atomicFormulas (Not phi) = atomicFormulas phi
-atomicFormulas (And phi psi) = nub $ atomicFormulas phi ++ atomicFormulas psi
-atomicFormulas (Or phi psi) = nub $ atomicFormulas phi ++ atomicFormulas psi
-atomicFormulas (Implies phi psi) = nub $ atomicFormulas phi ++ atomicFormulas psi
-atomicFormulas (Iff phi psi) = nub $ atomicFormulas phi ++ atomicFormulas psi
-atomicFormulas (Exists x phi) = atomicFormulas phi
-atomicFormulas (Forall x phi) = atomicFormulas phi
+
+type PropName = Int --(RelName, [Term])
+
+data Literal = Pos PropName | Neg PropName deriving (Eq, Show, Ord)
+
+literal2var :: Literal -> PropName
+literal2var (Pos p) = p
+literal2var (Neg p) = p
+
+opposite :: Literal -> Literal
+opposite (Pos p) = Neg p
+opposite (Neg p) = Pos p
+
+type CNFClause = [Literal]
+type CNF = [CNFClause]
+
+positiveLiterals :: CNFClause -> [PropName]
+positiveLiterals ls = nub [p | Pos p <- ls]
+
+negativeLiterals :: CNFClause -> [PropName]
+negativeLiterals ls = nub [p | Neg p <- ls]
+
+removeTautologies :: CNF -> CNF
+removeTautologies = filter notTautological
+
+notTautological :: CNFClause -> Bool
+notTautological clause =
+  null (positive `intersect` negative)
+  where
+    positive = positiveLiterals clause
+    negative = negativeLiterals clause
+
+oneLiteral :: CNF -> CNF
+oneLiteral cnf = case toRemove cnf of
+  Nothing -> cnf
+  Just literal ->
+    let cnf' = map (removeOpposites literal) cnf in
+      let cnf'' = filter (notContaining literal) cnf' in
+        oneLiteral cnf''
+
+toRemove :: CNF -> Maybe Literal
+toRemove [] = Nothing
+toRemove (clause : rest) =
+  case nub clause of
+    [l] -> Just l
+    _ -> toRemove rest
+
+removeOpposites :: Literal -> CNFClause -> CNFClause
+removeOpposites literal = filter (/=opposite literal)
+
+notContaining :: Literal -> CNFClause -> Bool
+notContaining literal clause = not (elem literal clause)
+
+affirmativeNegative :: CNF -> CNF
+affirmativeNegative cnf =
+  filter (allInList (both cnf)) cnf
+
+both :: CNF -> [PropName]
+both cnf =
+  let positive = foldl (++) [] (map positiveLiterals cnf) in
+    let negative = foldl (++) [] (map negativeLiterals cnf) in
+      intersect positive negative
+
+allInList :: [PropName] -> CNFClause -> Bool
+allInList list clause =
+  let vars = map literal2var clause in
+    null (vars \\ list)
+
+resolution :: CNF -> CNF
+resolution cnf = case getVar cnf of
+  Nothing -> cnf
+  Just var -> let (positive, negative, rest) = splitClauses var cnf in
+    (prod positive negative) ++ rest
+
+getVar :: CNF -> Maybe PropName
+getVar cnf = case cnf of
+  [] -> Nothing
+  ([] : rest) -> getVar rest
+  ((literal : _) : _) -> Just (literal2var literal)
+
+prod :: [[a]] -> [[a]] -> [[a]]
+prod = liftM2 (++)
+
+splitClauses :: PropName -> CNF -> (CNF, CNF, CNF)
+splitClauses var cnf =
+  let positive = filter (elem (Pos var)) cnf in
+    let negative = filter (elem (Neg var)) cnf in
+      let rest = (cnf \\ positive) \\ negative in
+        (map (filter (/= (Pos var))) positive, map (filter (/= (Neg var))) negative, rest)
+
+-- nub :: Ord a => [a] -> [a]
+-- nub = Data.Set.toList . Data.Set.fromList
+
+dp :: CNF -> Bool
+dp cnf
+  | null cnf = True
+  | [] `elem` cnf = False
+  | otherwise = let cnf' = affirmativeNegative (oneLiteral (removeTautologies cnf)) in
+    dp (resolution cnf')
+
+relVariables :: Map (RelName, [Term]) PropName -> Formula -> Map (RelName, [Term]) PropName
+relVariables acc phi = case phi of
+  F -> acc
+  T -> acc
+  Rel relName terms ->
+    if member (relName, terms) acc then acc
+    else insert (relName, terms) (size acc) acc
+  Not psi -> relVariables acc psi
+  And psi1 psi2 ->
+    let vars1 = relVariables acc psi1 in
+      relVariables vars1 psi2
+  Or psi1 psi2 ->
+    let vars1 = relVariables acc psi1 in
+      relVariables vars1 psi2
+  Implies psi1 psi2 ->
+    let vars1 = relVariables acc psi1 in
+      relVariables vars1 psi2
+  Iff psi1 psi2 ->
+    let vars1 = relVariables acc psi1 in
+      relVariables vars1 psi2
+  Exists _ psi -> relVariables acc psi
+  Forall _ psi -> relVariables acc psi
+
+ecnf :: Formula -> CNF
+
+ecnf f =
+  let vars = relVariables empty f in
+    let p = size vars in
+      let (cnf, literal, _) = ecnfHelper f (p + 1) vars p in
+        ([Pos p] : [literal] : cnf)
+
+ecnfHelper :: Formula -> PropName -> Map (RelName, [Term]) PropName -> PropName -> (CNF, Literal, PropName)
+ecnfHelper f next variables p = case f of
+  T -> ([], Pos p, next)
+  F -> ([], Neg p, next)
+  Rel relName terms -> ([], Pos (variables ! (relName, terms)), next)
+  -- Prop p -> ([], Pos p, variables)
+  Not f1 ->
+    let (cnf1, a, next1) = ecnfHelper f1 next variables p in
+      (cnf1, opposite a, next1)
+  And f1 f2 ->
+    let (cnf1, a, next1) = ecnfHelper f1 next variables p in
+      let (cnf2, b, next2) = ecnfHelper f2 next1 variables p in
+        let var = next2 in
+          (cnf1 ++ cnf2 ++ [[opposite a, opposite b, Pos var], [a, Neg var], [b, Neg var]],
+          Pos var,
+          next2 + 1)
+  Or f1 f2 ->
+    let (cnf1, a, next1) = ecnfHelper f1 next variables p in
+      let (cnf2, b, next2) = ecnfHelper f2 next1 variables p in
+        let var = next2 in
+          (cnf1 ++ cnf2 ++ [[opposite a, Pos var], [a, b, Neg var], [opposite b, Pos var]],
+          Pos var,
+          next2 + 1)
+  Implies f1 f2 ->
+    let (cnf1, a, next1) = ecnfHelper f1 next variables p in
+      let (cnf2, b, next2) = ecnfHelper f2 next1 variables p in
+        let var = next2 in
+          (cnf1 ++ cnf2 ++ [[Neg var, opposite a, b], [a, Pos var], [opposite b, Pos var]],
+          Pos var,
+          next2 + 1)
+  Iff f1 f2 ->
+    let (cnf1, a, next1) = ecnfHelper f1 next variables p in
+      let (cnf2, b, next2) = ecnfHelper f2 next1 variables p in
+        let var = next2 in
+          (cnf1 ++ cnf2 ++ [[Neg var, opposite a, b], [Neg var, opposite b, a], [a, b, Pos var], [a, opposite a, Pos var], [opposite b, b, Pos var], [opposite b, opposite a, Pos var]],
+          Pos var,
+          next2 + 1)
 
 sat :: Formula -> Bool
-sat phi = or [ev int phi | int <- functions atoms [True, False]]
-  where atoms = atomicFormulas phi
-        ev :: (Formula -> Bool) -> Formula -> Bool
-        ev int T = True
-        ev int F = False
-        ev int atom@(Rel _ _) = int atom
-        ev int (Not φ) = not (ev int φ)
-        ev int (Or φ ψ) = ev int φ || ev int ψ
-        ev int (And φ ψ) = ev int φ && ev int ψ
-        ev _ φ = error $ "unexpected formula: " ++ show φ
+sat phi = dp (ecnf phi)
 
 -- Sprawdza kolejne prefiksy aż znajdzie niespełnialny
 check :: Formula -> [Formula] -> Bool
@@ -374,7 +509,7 @@ prover phi =
 
 main :: IO ()
 main = do
-    eof <- hIsEOF stdin
+    eof <- isEOF
     if eof
         then return ()
         else do

@@ -19,7 +19,7 @@ type VarName = String
 type FunName = String
 type RelName = String
 
-data GenTerm a = Var a | Fun FunName [GenTerm a] deriving (Eq, Show)
+data GenTerm a = Var a | Fun FunName [GenTerm a] deriving (Eq, Show, Ord)
 
 type Term = GenTerm VarName
 
