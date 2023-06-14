@@ -416,7 +416,10 @@ dp cnf
   | null cnf = True
   | [] `elem` cnf = False
   | otherwise = let cnf' = affirmativeNegative (oneLiteral (removeTautologies cnf)) in
-    dp (resolution cnf')
+    case getVar cnf' of
+      Nothing -> dp cnf'
+      Just var -> dp ([Pos var] : cnf') || dp ([Neg var] : cnf')
+    -- dp (resolution cnf')
 
 relVariables :: Map (RelName, [Term]) PropName -> Formula -> Map (RelName, [Term]) PropName
 relVariables acc phi = case phi of
@@ -483,7 +486,8 @@ ecnfHelper f next variables p = case f of
     let (cnf1, a, next1) = ecnfHelper f1 next variables p in
       let (cnf2, b, next2) = ecnfHelper f2 next1 variables p in
         let var = next2 in
-          (cnf1 ++ cnf2 ++ [[Neg var, opposite a, b], [Neg var, opposite b, a], [a, b, Pos var], [a, opposite a, Pos var], [opposite b, b, Pos var], [opposite b, opposite a, Pos var]],
+          (cnf1 ++ cnf2 ++ [[Neg var, opposite a, b], [Neg var, opposite b, a], [a, b, Pos var],
+          [a, opposite a, Pos var], [opposite b, b, Pos var], [opposite b, opposite a, Pos var]],
           Pos var,
           next2 + 1)
 
@@ -497,6 +501,19 @@ check phi forms =
     [] -> True
     (psi : rest) -> check (And phi psi) rest)
 
+andN :: Formula -> Int -> [Formula] -> (Formula, [Formula])
+andN phi n forms =
+  if n == 0 then (phi, forms)
+  else case forms of
+    [] -> (phi, forms)
+    (psi : rest) -> andN (And psi phi) (n - 1) rest
+
+check2 :: Formula -> Int -> [Formula] -> Bool
+check2 phi n forms =
+  sat phi && (case forms of
+    [] -> True
+    _ -> let (phi', forms') = andN phi n forms in
+      check2 phi' (2 * n) forms')
 
 prover :: Formula -> Bool
 prover phi =
@@ -504,7 +521,8 @@ prover phi =
     let ksi = quantifierFree psi in
       let universe = herbrandtUniverse ksi in
         let instances = groundInstances ksi universe in
-          not (check T instances)
+          not (check2 T 1 instances)
+          -- not (check T instances)
 
 
 main :: IO ()
