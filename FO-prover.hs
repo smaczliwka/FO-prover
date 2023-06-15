@@ -515,14 +515,46 @@ check2 phi n forms =
     _ -> let (phi', forms') = andN phi n forms in
       check2 phi' (2 * n) forms')
 
+data Trivial = Tautology | NotTautology | AntiTautology
+
+trivial :: Formula -> Maybe Trivial
+trivial phi = case phi of
+  F -> Just AntiTautology
+  T -> Just Tautology
+  Rel relName terms -> Just NotTautology
+  Not psi -> case trivial psi of
+    Nothing -> Nothing
+    Just Tautology -> Just AntiTautology
+    Just AntiTautology -> Just Tautology
+    Just NotTautology -> Just NotTautology
+  Exists _ psi -> trivial psi
+  Forall _ psi -> trivial psi
+  And psi1 psi2 -> case (trivial psi1, trivial psi2) of
+    (Just Tautology, Just Tautology) -> Just Tautology
+    (Just AntiTautology, _) -> Just AntiTautology
+    (_, Just AntiTautology) -> Just AntiTautology
+    _ -> Nothing
+  Or psi1 psi2 -> case (trivial psi1, trivial psi2) of
+    (Just AntiTautology, Just AntiTautology) -> Just AntiTautology
+    (Just Tautology, _) -> Just Tautology
+    (_, Just Tautology) -> Just Tautology
+    _ -> Nothing
+  Implies psi1 psi2 -> trivial (Or (Not psi1) psi2)
+  Iff psi1 psi2 -> trivial (And (Implies psi1 psi2) (Implies psi2 psi1))
+
 prover :: Formula -> Bool
 prover phi =
-  let psi = skolemise (Not phi) in
-    let ksi = quantifierFree psi in
-      let universe = herbrandtUniverse ksi in
-        let instances = groundInstances ksi universe in
-          not (check2 T 1 instances)
-          -- not (check T instances)
+  case trivial phi of
+    Just Tautology -> True
+    Just AntiTautology -> False
+    Just NotTautology -> False
+    Nothing ->
+      let psi = skolemise (Not phi) in
+        let ksi = quantifierFree psi in
+          let universe = herbrandtUniverse ksi in
+            let instances = groundInstances ksi universe in
+              -- not (check2 T 1 instances)
+              not (check T instances)
 
 
 main :: IO ()
