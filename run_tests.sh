@@ -133,8 +133,8 @@ echo "$score" > "score.txt"
 
 # calculation of the awarded points for the project
 score=$(( score > 0 ? score : 0 ))
-score=$(( score < 81 ? score : 81 ))
-points=$(( (score * maxpoints) / 81 + 1 ))
+score=$(( score < 79 ? score : 79 ))
+points=$(( (score * maxpoints) / 79 + 1 ))
 
 echo "Points: $points"
 echo "$points" > "points.txt"
