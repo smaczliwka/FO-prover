@@ -4,7 +4,6 @@ module Main where
 
 import Data.List ( map, (\\), intersect, partition, nub)
 import Data.Map(Map, member, insert, size, empty, (!))
--- import Data.Set(toList, fromList)
 
 import System.IO
 import System.Random
@@ -30,7 +29,7 @@ varsT :: Term -> [VarName]
 varsT (Var x) = [x]
 varsT (Fun _ ts) = nub $ concatMap varsT ts
 
------------------------------------------------------------
+--------------------------------------------------------------
 
 vars :: Formula -> [VarName]
 vars T = []
@@ -44,17 +43,17 @@ vars (Iff phi psi) = nub $ vars phi ++ vars psi
 vars (Exists x phi) = nub $ x : vars phi
 vars (Forall x phi) = nub $ x : vars phi
 
------------------------------------------------------------
+--------------------------------------------------------------
 
 freshIn :: VarName -> Formula -> Bool
-x `freshIn` phi = notElem x (vars phi)
+x `freshIn` phi = x `notElem` vars phi
 
------------------------------------------------------------
+--------------------------------------------------------------
 
 freshVariant :: VarName -> Formula -> VarName
 freshVariant x phi = head [ y | y <- variants x, y `freshIn` phi ]
 
------------------------------------------------------------
+--------------------------------------------------------------
 
 renameT :: VarName -> VarName -> Term -> Term
 renameT x y (Var z)
@@ -78,34 +77,32 @@ rename x y (Exists z phi)
   | z == x = Exists z phi
   | otherwise = Exists z (rename x y phi)
 
------------------------------------------------------------
-
--- type Substitution = VarName -> Term
+--------------------------------------------------------------
 
 substT :: Substitution -> Term -> Term
-substT σ (Var x) = σ x
-substT σ (Fun f ts) = Fun f (map (substT σ) ts)
+substT rho (Var x) = rho x
+substT rho (Fun f ts) = Fun f (map (substT rho) ts)
 
 subst :: Substitution -> Formula -> Formula
 subst _ T = T
 subst _ F = F
-subst σ (Rel r ts) = Rel r $ map (substT σ) ts
-subst σ (Not phi) = Not $ subst σ phi
-subst σ (And phi psi) = And (subst σ phi) (subst σ psi)
-subst σ (Or phi psi) = Or (subst σ phi) (subst σ psi)
-subst σ (Implies phi psi) = Implies (subst σ phi) (subst σ psi)
-subst σ (Iff phi psi) = Iff (subst σ phi) (subst σ psi)
-subst σ (Exists x phi) = Exists x (subst (update σ x (Var x)) phi)
-subst σ (Forall x phi) = Forall x (subst (update σ x (Var x)) phi)
+subst rho (Rel r ts) = Rel r $ map (substT rho) ts
+subst rho (Not phi) = Not $ subst rho phi
+subst rho (And phi psi) = And (subst rho phi) (subst rho psi)
+subst rho (Or phi psi) = Or (subst rho phi) (subst rho psi)
+subst rho (Implies phi psi) = Implies (subst rho phi) (subst rho psi)
+subst rho (Iff phi psi) = Iff (subst rho phi) (subst rho psi)
+subst rho (Exists x phi) = Exists x (subst (update rho x (Var x)) phi)
+subst rho (Forall x phi) = Forall x (subst (update rho x (Var x)) phi)
 
--------------------------------------------------------------
+--------------------------------------------------------------
 
 generalise :: Formula -> Formula
 generalise phi = go $ fv phi
   where go [] = phi
         go (x:xs) = Forall x $ go xs
 
-------------------------------------------------------------
+--------------------------------------------------------------
 
 fresh :: Formula -> Formula
 fresh phi = evalState (go phi) []
@@ -123,12 +120,12 @@ fresh phi = evalState (go phi) []
 
         go2 quantifier x phi =
           do xs <- get
-             let y = head [y | y <- variants x, notElem y xs]
+             let y = head [y | y <- variants x, y `notElem` xs]
              let psi = rename x y phi
              put $ y : xs
-             fmap (quantifier y) $ go psi
+             quantifier y <$> go psi
 
--------------------------------------------------------------
+--------------------------------------------------------------
 
 nnf :: Formula -> Formula
 nnf T = T
@@ -152,7 +149,7 @@ nnf (Not (Iff phi psi)) = nnf (Not (nnf (Iff phi psi)))
 nnf (Not (Exists x phi)) = Forall x (nnf (Not phi))
 nnf (Not (Forall x phi)) = Exists x (nnf (Not phi))
 
-------------------------------------------------------------
+--------------------------------------------------------------
 
 -- prenex normal form (all quantifiers in front)
 pnf :: Formula -> Formula
@@ -240,43 +237,33 @@ skolemFunction univar repl (Exists y phi) = let repl' = update repl y (Fun y uni
 skolemFunction univar repl (Forall x phi) = let univar' = (Var x : univar) in
   Forall x (skolemFunction univar' repl phi)
 
----------------------------------------------------------------
+--------------------------------------------------------------
 
--- Wszystkie sygnatury funkcji występujące w termie
+sigT :: Term -> [(FunName, Int)]
+sigT (Var x) = []
+sigT (Fun fname ts) = nub $ (fname, length ts) : concatMap sigT ts
 
-funsT :: Term -> [(FunName, Int)]
-funsT (Var x) = []
-funsT (Fun fname ts) = nub $ (fname, length ts) : concatMap funsT ts
+sig :: Formula -> [(FunName, Int)]
+sig T = []
+sig F = []
+sig (Rel _ ts) = nub $ concatMap sigT ts
+sig (Not phi) = sig phi
+sig (And phi psi) = nub $ sig phi ++ sig psi
+sig (Or phi psi) = nub $ sig phi ++ sig psi
+sig (Implies phi psi) = nub $ sig phi ++ sig psi
+sig (Iff phi psi) = nub $ sig phi ++ sig psi
+sig (Exists x phi) = sig phi
+sig (Forall x phi) = sig phi
 
--- Wszystkie sygnatury funkcji występujące w formule
+--------------------------------------------------------------
 
-funs :: Formula -> [(FunName, Int)]
-funs T = []
-funs F = []
-funs (Rel _ ts) = nub $ concatMap funsT ts
-funs (Not phi) = funs phi
-funs (And phi psi) = nub $ funs phi ++ funs psi
-funs (Or phi psi) = nub $ funs phi ++ funs psi
-funs (Implies phi psi) = nub $ funs phi ++ funs psi
-funs (Iff phi psi) = nub $ funs phi ++ funs psi
-funs (Exists x phi) = funs phi
-funs (Forall x phi) = funs phi
+-- Herbrandt universe generation
 
 isConst :: (FunName, Int) -> Bool
 isConst (_, nargs) = nargs == 0
 
--- argList :: (FunName, Int) -> (FunName, [Int])
--- argList (fname, n) = (fname, [1..n])
-
 noArgFun :: FunName -> Term
 noArgFun fname = Fun fname []
-
--- argFun :: [Term] -> [(FunName)]
-
--- countArgs :: Int -> [(FunName, [Int])] -> [(FunName, Int)] -> ([Int], [(FunName, [Int])])
--- countArgs first acc [] = ([0..first - 1], reverse acc)
--- countArgs first acc ((fname, nargs) : rest) =
---   countArgs (first + nargs) ((fname, [first..first+nargs-1]) : acc) rest
 
 -- alternating merge of two (potentially infinite) lists
 merge :: [a] -> [a] -> [a]
@@ -285,25 +272,20 @@ merge (a : as) bs = a : merge bs as
 
 -- alternating merge of a (potentially infinite) list of (potentially infinite) lists
 merges :: [[a]] -> [a]
-merges ass = foldr merge [] ass
+merges = foldr merge []
 
 -- collect all functions from a finite list to a (potentially infinite) list
 functions :: Eq a => [a] -> [b] -> [a -> b]
 functions [] _ = [undefined]
 functions (a:as) bs = merges [[update f a b | f <- functions as bs] | b <- bs]
 
-herbrandtUniverse :: Formula -> [Term]
+herbrandt :: Formula -> [Term]
 
--- herbrandtUniverse phi = []
-
-herbrandtUniverse phi =
-  let (c, f) = partition isConst (funs phi) in
+herbrandt phi =
+  let (c, f) = partition isConst (sig phi) in
     let c' = if null c then [noArgFun "c"] else map (noArgFun . fst) c in
-      -- let (allArgs, f') = countArgs 0 [] f in
         let universe = c' ++ merges [[Fun fname (map subst [1..nargs]) | subst <- functions [1..nargs] universe] | (fname, nargs) <- f] in
-        -- let universe = c' ++ [Fun fname (map subst args) | (fname, args) <- f', subst <- functions args c'] in
           universe
-
 
 quantifierFree :: Formula -> Formula
 quantifierFree phi = case phi of
@@ -317,9 +299,11 @@ groundInstances phi ts =
       map f repls where
         f repl = subst repl phi
 
--- TODO: use Davis-Putnam
+--------------------------------------------------------------
 
-type PropName = Int --(RelName, [Term])
+-- Davis-Putnam SAT solver
+
+type PropName = Int
 
 data Literal = Pos PropName | Neg PropName deriving (Eq, Show, Ord)
 
@@ -369,7 +353,7 @@ removeOpposites :: Literal -> CNFClause -> CNFClause
 removeOpposites literal = filter (/=opposite literal)
 
 notContaining :: Literal -> CNFClause -> Bool
-notContaining literal clause = not (elem literal clause)
+notContaining = notElem
 
 affirmativeNegative :: CNF -> CNF
 affirmativeNegative cnf =
@@ -377,8 +361,8 @@ affirmativeNegative cnf =
 
 both :: CNF -> [PropName]
 both cnf =
-  let positive = foldl (++) [] (map positiveLiterals cnf) in
-    let negative = foldl (++) [] (map negativeLiterals cnf) in
+  let positive = concatMap positiveLiterals cnf in
+    let negative = concatMap negativeLiterals cnf in
       intersect positive negative
 
 allInList :: [PropName] -> CNFClause -> Bool
@@ -390,7 +374,7 @@ resolution :: CNF -> CNF
 resolution cnf = case getVar cnf of
   Nothing -> cnf
   Just var -> let (positive, negative, rest) = splitClauses var cnf in
-    (prod positive negative) ++ rest
+    prod positive negative ++ rest
 
 getVar :: CNF -> Maybe PropName
 getVar cnf = case cnf of
@@ -406,10 +390,7 @@ splitClauses var cnf =
   let positive = filter (elem (Pos var)) cnf in
     let negative = filter (elem (Neg var)) cnf in
       let rest = (cnf \\ positive) \\ negative in
-        (map (filter (/= (Pos var))) positive, map (filter (/= (Neg var))) negative, rest)
-
--- nub :: Ord a => [a] -> [a]
--- nub = Data.Set.toList . Data.Set.fromList
+        (map (filter (/= Pos var)) positive, map (filter (/= Neg var)) negative, rest)
 
 dp :: CNF -> Bool
 dp cnf
@@ -457,7 +438,6 @@ ecnfHelper f next variables p = case f of
   T -> ([], Pos p, next)
   F -> ([], Neg p, next)
   Rel relName terms -> ([], Pos (variables ! (relName, terms)), next)
-  -- Prop p -> ([], Pos p, variables)
   Not f1 ->
     let (cnf1, a, next1) = ecnfHelper f1 next variables p in
       (cnf1, opposite a, next1)
@@ -491,29 +471,9 @@ ecnfHelper f next variables p = case f of
           Pos var,
           next2 + 1)
 
-sat :: Formula -> Bool
-sat phi = dp (ecnf phi)
+--------------------------------------------------------------
 
--- Sprawdza kolejne prefiksy aż znajdzie niespełnialny
-check :: Formula -> [Formula] -> Bool
-check phi forms =
-  sat phi && (case forms of
-    [] -> True
-    (psi : rest) -> check (And phi psi) rest)
-
-andN :: Formula -> Int -> [Formula] -> (Formula, [Formula])
-andN phi n forms =
-  if n == 0 then (phi, forms)
-  else case forms of
-    [] -> (phi, forms)
-    (psi : rest) -> andN (And psi phi) (n - 1) rest
-
-check2 :: Formula -> Int -> [Formula] -> Bool
-check2 phi n forms =
-  sat phi && (case forms of
-    [] -> True
-    _ -> let (phi', forms') = andN phi n forms in
-      check2 phi' (2 * n) forms')
+-- Optimization for trivial formulas
 
 data Trivial = Tautology | NotTautology | AntiTautology
 
@@ -542,6 +502,18 @@ trivial phi = case phi of
   Implies psi1 psi2 -> trivial (Or (Not psi1) psi2)
   Iff psi1 psi2 -> trivial (And (Implies psi1 psi2) (Implies psi2 psi1))
 
+--------------------------------------------------------------
+
+sat :: Formula -> Bool
+sat phi = dp (ecnf phi)
+
+-- check conjunctions of prefixes unfil unsatisfiable is found
+check :: Formula -> [Formula] -> Bool
+check phi forms =
+  sat phi && (case forms of
+    [] -> True
+    (psi : rest) -> check (And phi psi) rest)
+
 prover :: Formula -> Bool
 prover phi =
   case trivial phi of
@@ -551,11 +523,9 @@ prover phi =
     Nothing ->
       let psi = skolemise (Not phi) in
         let ksi = quantifierFree psi in
-          let universe = herbrandtUniverse ksi in
+          let universe = herbrandt ksi in
             let instances = groundInstances ksi universe in
-              -- not (check2 T 1 instances)
               not (check T instances)
-
 
 main :: IO ()
 main = do
